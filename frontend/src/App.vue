@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { readDbVersion } from './utils/db';
+import { onDataChanged } from './utils/crossTab';
+import { useClockStore } from './stores/clockStore';
+import { usePartStore } from './stores/partStore';
+import { useStepStore } from './stores/stepStore';
 
 const route = useRoute();
 const router = useRouter();
@@ -15,6 +19,15 @@ const activeMenu = computed(() => {
 });
 
 const version = readDbVersion();
+
+// 其他标签页写入后同步刷新本页缓存，让先提交的版本及时可见
+onMounted(() => {
+  onDataChanged(() => {
+    void useClockStore().load();
+    void usePartStore().load();
+    void useStepStore().load();
+  });
+});
 
 function onSelect(index: string) {
   if (index === '/tests') {

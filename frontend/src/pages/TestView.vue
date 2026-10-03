@@ -3,20 +3,35 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
+import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
+import ReviewDialog from '../components/common/ReviewDialog.vue';
 import { TEST_POSITIONS, judgeTest, type PositionReading } from '../types/test';
+import type { ReviewTarget } from '../types/review';
+import { baselineSummary } from '../utils/review';
 import { amplitudeLevel, avgAmplitude, avgBeatError, avgRate, beatErrorLevel, rateLabel, ratePerDayToMonth } from '../utils/timeCalc';
 
 const route = useRoute();
 const router = useRouter();
 const clockStore = useClockStore();
+const partStore = usePartStore();
 const stepStore = useStepStore();
 
 const clockId = ref(String(route.params.clockId ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
+const clockParts = computed(() => partStore.byClock(clockId.value));
+const staleCount = computed(() => tests.value.filter((t) => t.reviewState === 'stale').length);
+
+const reviewVisible = ref(false);
+const reviewTarget = ref<ReviewTarget | null>(null);
+
+function openReview(id: string) {
+  reviewTarget.value = { kind: 'test', id };
+  reviewVisible.value = true;
+}
 
 const readings = reactive<PositionReading[]>(
   TEST_POSITIONS.map((position) => ({ position, rate: 0, amplitude: 260, beatError: 0.4 })),
@@ -49,6 +64,7 @@ const workSheet = computed(() => {
   lines.push(`平均摆幅：${avg.value.amplitude} °（${amplitudeLevel(avg.value.amplitude).label}）`);
   lines.push(`平均偏振：${avg.value.beatError} ms（${beatErrorLevel(avg.value.beatError).label}）`);
   lines.push(`动力储备：${powerReserve.value} h`);
+  lines.push(`零件基准：${baselineSummary(clockParts.value)}（本次记录以此为准）`);
   lines.push(`结论：${conclusion.value}`);
   return lines.join('\n');
 });
@@ -68,7 +84,7 @@ async function save() {
     powerReserve: powerReserve.value,
     conclusion: conclusion.value,
   });
-  ElMessage.success('走时测试已记录');
+  ElMessage.success('走时测试已记录（按当前零件基准存档）');
 }
 
 async function copySheet() {
@@ -102,6 +118,7 @@ function reset() {
 
 onMounted(async () => {
   await clockStore.load();
+  await partStore.load();
   await stepStore.load();
   if (!clock.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
@@ -116,6 +133,7 @@ onMounted(async () => {
       <h2>走时测试 · {{ clock?.clockNo ?? '未选择' }}</h2>
       <StateBadge :grade="clock?.conditionGrade" />
       <el-tag type="info" effect="plain">历史测试 {{ tests.length }} 次</el-tag>
+      <el-tag v-if="staleCount > 0" type="warning">待复核 {{ staleCount }} 次</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/clocks/${clockId}`)">返回钟表详情</el-button>
     </div>
@@ -195,19 +213,37 @@ onMounted(async () => {
         <el-card shadow="never">
           <template #header><strong>历史测试记录</strong></template>
           <el-table :data="tests" size="small" border>
-            <el-table-column label="时间" width="170">
+            <el-table-column label="时间" width="165">
               <template #default="{ row }">{{ new Date(row.testedAt).toLocaleString('zh-CN') }}</template>
             </el-table-column>
-            <el-table-column prop="rate" label="日差" width="80" />
-            <el-table-column prop="amplitude" label="摆幅" width="80" />
-            <el-table-column prop="beatError" label="偏振" width="80" />
-            <el-table-column prop="powerReserve" label="动储 h" width="90" />
-            <el-table-column prop="conclusion" label="结论" min-width="120" />
+            <el-table-column prop="rate" label="日差" width="70" />
+            <el-table-column prop="amplitude" label="摆幅" width="70" />
+            <el-table-column prop="beatError" label="偏振" width="70" />
+            <el-table-column prop="powerReserve" label="动储 h" width="80" />
+            <el-table-column prop="conclusion" label="结论" min-width="110" />
+            <el-table-column label="复核" width="130">
+              <template #default="{ row }">
+                <el-tag v-if="row.reviewState === 'stale'" type="warning" size="small">待复核</el-tag>
+                <el-tag v-else type="success" size="small" effect="plain">有效</el-tag>
+                <el-button
+                  v-if="row.reviewState === 'stale'"
+                  size="small"
+                  type="warning"
+                  plain
+                  style="margin-left: 6px"
+                  @click="openReview(row.id)"
+                >
+                  复核
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
           <el-empty v-if="tests.length === 0" description="暂无历史测试" :image-size="60" />
         </el-card>
       </div>
     </div>
+
+    <ReviewDialog v-model="reviewVisible" :target="reviewTarget" />
   </div>
 </template>
 

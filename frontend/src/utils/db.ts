@@ -6,7 +6,7 @@ import type { TimekeepingTest } from '../types/test';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -46,6 +46,64 @@ class ClockRepairDB extends Dexie {
           .toCollection()
           .modify((row: any) => {
             if (row.positions === undefined) row.positions = [];
+          });
+      });
+    // v3：零件版本号 + 工序/走时测试复核基准，老记录补齐基准后保持有效可用
+    this.version(3)
+      .stores({
+        clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+        parts: 'id, clockId, name, wearState, decision, sourceLot, revision',
+        steps: 'id, clockId, seq, stepType, state, startedAt, reviewState',
+        tests: 'id, clockId, testedAt, conclusion, reviewState',
+      })
+      .upgrade(async (tx) => {
+        const now = Date.now();
+        await tx
+          .table('parts')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.revision === undefined) row.revision = 1;
+            if (row.updatedAt === undefined) row.updatedAt = now;
+          });
+        const parts = (await tx.table('parts').toArray()) as Array<{
+          id: string;
+          clockId: string;
+          revision?: number;
+        }>;
+        const revisionOf = new Map(parts.map((p) => [p.id, p.revision ?? 1]));
+        const partIdsByClock = new Map<string, string[]>();
+        for (const p of parts) {
+          const list = partIdsByClock.get(p.clockId) ?? [];
+          list.push(p.id);
+          partIdsByClock.set(p.clockId, list);
+        }
+        await tx
+          .table('steps')
+          .toCollection()
+          .modify((row: any) => {
+            if (!row.reviewState) row.reviewState = 'valid';
+            if (!row.partBaseline) {
+              const baseline: Record<string, number> = {};
+              const ids: string[] = Array.isArray(row.partIds) ? row.partIds : [];
+              for (const pid of ids) {
+                const rev = revisionOf.get(pid);
+                if (rev !== undefined) baseline[pid] = rev;
+              }
+              row.partBaseline = baseline;
+            }
+          });
+        await tx
+          .table('tests')
+          .toCollection()
+          .modify((row: any) => {
+            if (!row.reviewState) row.reviewState = 'valid';
+            if (!row.partBaseline) {
+              const baseline: Record<string, number> = {};
+              for (const pid of partIdsByClock.get(row.clockId) ?? []) {
+                baseline[pid] = revisionOf.get(pid) ?? 1;
+              }
+              row.partBaseline = baseline;
+            }
           });
       });
   }
@@ -134,6 +192,8 @@ export async function ensureSeedData(): Promise<void> {
       decision: '换新',
       sourceLot: 'MS-2024-07',
       dimension: 0.35,
+      revision: 1,
+      updatedAt: now - 12 * day,
     },
     {
       id: newId('prt'),
@@ -145,6 +205,8 @@ export async function ensureSeedData(): Promise<void> {
       decision: '修配',
       sourceLot: 'JWL-18',
       dimension: 1.2,
+      revision: 1,
+      updatedAt: now - 8 * day,
     },
     {
       id: newId('prt'),
@@ -156,6 +218,8 @@ export async function ensureSeedData(): Promise<void> {
       decision: '保留',
       sourceLot: '',
       dimension: 14.5,
+      revision: 1,
+      updatedAt: now - 9 * day,
     },
   ];
 
@@ -176,6 +240,8 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 12 * day,
       finishedAt: now - 12 * day + 80 * 60000,
       state: 'done',
+      partBaseline: { [parts[0].id]: 1 },
+      reviewState: 'valid',
     },
     {
       id: newId('stp'),
@@ -193,6 +259,8 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 8 * day,
       finishedAt: now - 8 * day + 45 * 60000,
       state: 'done',
+      partBaseline: { [parts[1].id]: 1 },
+      reviewState: 'valid',
     },
     {
       id: newId('stp'),
@@ -209,6 +277,8 @@ export async function ensureSeedData(): Promise<void> {
       operator: '祁仲言',
       startedAt: now - 3 * day,
       state: 'pending',
+      partBaseline: { [parts[1].id]: 1 },
+      reviewState: 'valid',
     },
   ];
 
@@ -228,6 +298,8 @@ export async function ensureSeedData(): Promise<void> {
       ],
       powerReserve: 46,
       conclusion: '合格',
+      partBaseline: { [parts[0].id]: 1, [parts[1].id]: 1 },
+      reviewState: 'valid',
     },
   ];
 

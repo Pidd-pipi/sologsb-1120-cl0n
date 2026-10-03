@@ -9,8 +9,10 @@ import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
+import ReviewDialog from '../components/common/ReviewDialog.vue';
 import { CONDITION_GRADES, type ConditionGrade } from '../types/clock';
 import { judgeTest } from '../types/test';
+import type { ReviewTarget } from '../types/review';
 
 const route = useRoute();
 const router = useRouter();
@@ -20,10 +22,18 @@ const stepStore = useStepStore();
 
 const clockId = computed(() => String(route.params.id ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
-const { progress, steps, done, total, percent, current, gaps } = useRepairProgress(clockId);
+const { progress, steps, done, total, percent, current, gaps, stale } = useRepairProgress(clockId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
 const activeTab = ref('steps');
+
+const reviewVisible = ref(false);
+const reviewTarget = ref<ReviewTarget | null>(null);
+
+function openReview(kind: ReviewTarget['kind'], id: string) {
+  reviewTarget.value = { kind, id };
+  reviewVisible.value = true;
+}
 
 async function finish(id: string) {
   await stepStore.finish(id);
@@ -65,6 +75,7 @@ onMounted(async () => {
       <StateBadge v-if="clock" :grade="clock.conditionGrade" />
       <el-tag v-if="gaps.length" type="danger">顺序号缺口：{{ gaps.join('、') }}</el-tag>
       <el-tag v-else type="success" effect="plain">顺序号连续</el-tag>
+      <el-tag v-if="stale" type="warning">待复核工序 {{ stale }}</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="router.push(`/steps/new?clockId=${clockId}`)">追加维修工序</el-button>
       <el-button @click="router.push(`/tests/${clockId}`)">走时测试录入</el-button>
@@ -103,8 +114,9 @@ onMounted(async () => {
             <div class="card-head">
               <strong>修复进度</strong>
               <el-tag size="small">{{ done }}/{{ total }} · {{ percent }}%</el-tag>
+              <el-tag v-if="stale" size="small" type="warning">待复核 {{ stale }}</el-tag>
               <span v-if="current" class="muted">
-                当前卡点：#{{ current.seq }} {{ current.stepType }}（{{ current.operator }}）
+                当前卡点：#{{ current.seq }} {{ current.stepType }}（{{ current.operator }}）<template v-if="current.reviewState === 'stale'">· 待复核</template>
               </span>
               <span v-else class="muted">全部步骤已完成</span>
             </div>
@@ -119,6 +131,7 @@ onMounted(async () => {
                 @rollback="rollback"
                 @move="move"
                 @reorder="reorder"
+                @review="openReview('step', $event)"
               />
             </el-tab-pane>
             <el-tab-pane :label="`零件清单（${parts.length}）`" name="parts">
@@ -128,7 +141,10 @@ onMounted(async () => {
                 <el-table-column prop="wearState" label="磨损" width="90" />
                 <el-table-column prop="decision" label="处理" width="90" />
                 <el-table-column prop="sourceLot" label="来源批号" width="120" />
-                <el-table-column prop="dimension" label="尺寸 mm" width="100" />
+                <el-table-column prop="dimension" label="尺寸 mm" width="90" />
+                <el-table-column label="版本" width="70" align="center">
+                  <template #default="{ row }">r{{ row.revision }}</template>
+                </el-table-column>
               </el-table>
               <el-empty v-if="parts.length === 0" description="暂无零件登记" :image-size="60" />
             </el-tab-pane>
@@ -137,7 +153,11 @@ onMounted(async () => {
                 <div class="card-head">
                   <strong>{{ new Date(t.testedAt).toLocaleString('zh-CN') }}</strong>
                   <el-tag size="small" type="success">{{ t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}</el-tag>
+                  <el-tag v-if="t.reviewState === 'stale'" size="small" type="warning" effect="dark">待复核</el-tag>
                   <span class="muted">日差 {{ t.rate }} s/d · 摆幅 {{ t.amplitude }}° · 偏振 {{ t.beatError }} ms</span>
+                  <el-button v-if="t.reviewState === 'stale'" size="small" type="warning" plain @click="openReview('test', t.id)">
+                    复核
+                  </el-button>
                 </div>
                 <RateChart :readings="t.positions" />
               </div>
@@ -147,6 +167,8 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <ReviewDialog v-model="reviewVisible" :target="reviewTarget" />
   </div>
 </template>
 

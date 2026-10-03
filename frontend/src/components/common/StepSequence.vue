@@ -15,6 +15,7 @@ const emit = defineEmits<{
   (e: 'rollback', id: string): void;
   (e: 'move', payload: { id: string; direction: 'up' | 'down' }): void;
   (e: 'reorder', payload: { fromId: string; toId: string }): void;
+  (e: 'review', id: string): void;
 }>();
 
 const dragId = ref<string>('');
@@ -52,9 +53,12 @@ function onDrop(toId: string) {
       <el-table-column label="步骤" width="110">
         <template #default="{ row }">{{ row.stepType }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="130">
         <template #default="{ row }">
           <StateBadge :state="row.state" />
+          <el-tag v-if="row.reviewState === 'stale'" type="warning" size="small" effect="dark" class="stale-tag">
+            待复核
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column label="清洗/润滑" min-width="200">
@@ -71,8 +75,11 @@ function onDrop(toId: string) {
       <el-table-column label="责任人" width="100">
         <template #default="{ row }">{{ row.operator }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="250">
+      <el-table-column label="操作" width="320">
         <template #default="{ row, $index }">
+          <el-button v-if="row.reviewState === 'stale'" size="small" type="warning" plain @click="emit('review', row.id)">
+            复核
+          </el-button>
           <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
             完成
           </el-button>
@@ -109,6 +116,9 @@ function onDrop(toId: string) {
 .gap {
   color: #d93025;
   font-weight: 700;
+}
+.stale-tag {
+  margin-left: 4px;
 }
 .drag-handle {
   margin-left: 8px;

@@ -1,3 +1,5 @@
+import type { PartBaseline, ReviewState } from './review';
+
 /** 测试方位 */
 export type TestPosition = '面上' | '面下' | '12上' | '6上';
 
@@ -29,9 +31,13 @@ export interface TimekeepingTest {
   /** 动力储备 h */
   powerReserve: number;
   conclusion: string;
+  /** 复核基准：本钟表全部零件的版本快照（测试针对整芯状态） */
+  partBaseline: PartBaseline;
+  /** 复核状态：本钟表零件变动后测试失效，置为待复核 */
+  reviewState: ReviewState;
 }
 
-export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id'>;
+export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id' | 'partBaseline' | 'reviewState'>;
 
 /** 走时合格判定 */
 export function judgeTest(rate: number, beatError: number, amplitude: number): string {

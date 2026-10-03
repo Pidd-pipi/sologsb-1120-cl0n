@@ -15,24 +15,21 @@ const { filters, result, options, reset } = useClockSearch();
 
 const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as const;
 
-type RepairState = (typeof REPAIR_STATES)[number];
+/** 待复核总数（工序 + 走时测试），零件变动后失效的记录 */
+const staleTotal = computed(() => stepStore.staleSteps.length + stepStore.staleTests.length);
 
-/** 由工序与走时测试推导修复状态，用于台账分栏 */
-function repairStateOf(clockId: string): RepairState {
-  const steps = stepStore.items.filter((s) => s.clockId === clockId);
-  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
-  const done = steps.filter((s) => s.state === 'done').length;
-  if (steps.length === 0) return '未开工';
-  if (done === steps.length && tests.length > 0) return '已完成';
-  if (done === steps.length) return '待测试';
-  if (done > 0) return '维修中';
-  return '未开工';
+/** 卡片底部进度：只计复核后仍有效的工序与走时测试，与详情页/走时单同一结果 */
+function footerOf(clockId: string): string {
+  const s = stepStore.clockSummary(clockId);
+  const stale = s.stepsStale + s.testsStale;
+  const base = `工序 ${s.stepsDone}/${s.stepsTotal} · 走时测试 ${s.testsValid}/${s.testsTotal} 次`;
+  return stale > 0 ? `${base} · 待复核 ${stale}` : base;
 }
 
 const columns = computed(() =>
   REPAIR_STATES.map((state) => ({
     state,
-    rows: result.value.filter((it) => repairStateOf(it.id) === state),
+    rows: result.value.filter((it) => stepStore.repairStateOf(it.id) === state),
   })),
 );
 
@@ -88,6 +85,7 @@ onMounted(() => {
       <h2>钟表台账</h2>
       <el-tag>共 {{ clockStore.items.length }} 台</el-tag>
       <el-tag type="info" effect="plain">筛选命中 {{ result.length }} 台</el-tag>
+      <el-tag v-if="staleTotal > 0" type="warning">待复核 {{ staleTotal }} 项</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="openDialog">建档</el-button>
     </div>
@@ -143,9 +141,7 @@ onMounted(() => {
           v-for="item in col.rows"
           :key="item.id"
           :item="item"
-          :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
-            stepStore.items.filter((s) => s.clockId === item.id).length
-          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
+          :footer="footerOf(item.id)"
           @open="(id) => router.push(`/clocks/${id}`)"
         />
         <el-empty v-if="col.rows.length === 0" description="暂无" :image-size="60" />

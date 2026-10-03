@@ -6,17 +6,26 @@ import type { RepairStep } from '../types/step';
 export interface RepairProgress {
   steps: RepairStep[];
   total: number;
+  /** 复核后仍有效的完成数（state=done 且未失效） */
   done: number;
   rolledback: number;
+  /** 零件变动导致待复核的工序数 */
+  stale: number;
   percent: number;
-  /** 当前卡点步骤 */
+  /** 当前卡点步骤（含待复核的已完成步骤） */
   current: RepairStep | undefined;
   /** 顺序号缺口 */
   gaps: number[];
 }
 
+/** 工序是否按当前零件基准有效完成 */
+function isDoneValid(step: RepairStep): boolean {
+  return step.state === 'done' && step.reviewState === 'valid';
+}
+
 /**
  * 统计某台钟表的工序完成比例与当前卡点步骤。
+ * 完成数只计复核后仍有效的工序，与台账分栏、走时单共用同一结果。
  * 被钟表详情页与工序录入页消费。
  */
 export function useRepairProgress(clockId: string | Ref<string>) {
@@ -27,10 +36,11 @@ export function useRepairProgress(clockId: string | Ref<string>) {
     stepStore.items.filter((it) => it.clockId === id.value).sort((a, b) => a.seq - b.seq),
   );
   const total = computed(() => steps.value.length);
-  const done = computed(() => steps.value.filter((it) => it.state === 'done').length);
+  const done = computed(() => steps.value.filter(isDoneValid).length);
   const rolledback = computed(() => steps.value.filter((it) => it.state === 'rolledback').length);
+  const stale = computed(() => steps.value.filter((it) => it.reviewState === 'stale').length);
   const percent = computed(() => (total.value === 0 ? 0 : Math.round((done.value / total.value) * 100)));
-  const current = computed(() => steps.value.find((it) => it.state !== 'done'));
+  const current = computed(() => steps.value.find((it) => !isDoneValid(it)));
   const gaps = computed(() => findSeqGaps(steps.value.map((it) => it.seq)));
 
   const progress = computed<RepairProgress>(() => ({
@@ -38,10 +48,11 @@ export function useRepairProgress(clockId: string | Ref<string>) {
     total: total.value,
     done: done.value,
     rolledback: rolledback.value,
+    stale: stale.value,
     percent: percent.value,
     current: current.value,
     gaps: gaps.value,
   }));
 
-  return { progress, steps, total, done, rolledback, percent, current, gaps };
+  return { progress, steps, total, done, rolledback, stale, percent, current, gaps };
 }
