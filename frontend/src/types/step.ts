@@ -1,3 +1,5 @@
+import type { PartBaseline, ReviewState } from './review';
+
 /** 维修步骤类型 */
 export type StepType = '拆解' | '清洗' | '润滑' | '装配' | '调试' | '走时测试';
 
@@ -43,6 +45,11 @@ export interface RepairStep {
   startedAt: number;
   finishedAt?: number;
   state: StepState;
+  /** 复核状态：待复核 / 已复核 */
+  reviewState: ReviewState;
+  /** 复核基准：关联零件在最近一次复核时的状态快照 */
+  partBaseline: PartBaseline;
+  reviewedAt?: number;
 }
 
-export type RepairStepDraft = Omit<RepairStep, 'id'>;
+export type RepairStepDraft = Omit<RepairStep, 'id' | 'reviewState' | 'partBaseline' | 'reviewedAt'>;

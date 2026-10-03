@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
 import { STEP_FIELD_MAP, STEP_TYPES, type RepairStepDraft, type StepType } from '../types/step';
+import { isBaselineStale, snapshotVersions, ReviewConflictError } from '../types/review';
 
 const route = useRoute();
 const router = useRouter();
@@ -19,6 +20,15 @@ const clockId = ref(String(route.query.clockId ?? ''));
 const { steps, total, percent, current, gaps } = useRepairProgress(clockId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const nextSeq = computed(() => (steps.value.length === 0 ? 1 : Math.max(...steps.value.map((s) => s.seq)) + 1));
+
+/** 已失效（待复核）的工序 id 集合 */
+const staleStepIds = computed(() => {
+  const ids = new Set<string>();
+  for (const s of steps.value) {
+    if (isBaselineStale(s.partBaseline, parts.value)) ids.add(s.id);
+  }
+  return ids;
+});
 
 const form = reactive<RepairStepDraft>({
   clockId: '',
@@ -89,6 +99,27 @@ async function finish(id: string) {
 async function rollback(id: string) {
   await stepStore.rollback(id);
   ElMessage.warning('步骤已回退');
+}
+async function reviewStep(id: string) {
+  const step = steps.value.find((s) => s.id === id);
+  if (!step) return;
+  const versions = snapshotVersions(parts.value, step.partIds);
+  try {
+    await ElMessageBox.confirm(
+      '复核将按当前零件状态重新基准化该工序。若复核期间零件再次变动，将提示冲突并保留待复核状态。',
+      '工序复核',
+      { confirmButtonText: '确认复核', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await stepStore.reviewStep(id, versions);
+    ElMessage.success('工序复核完成');
+  } catch (e) {
+    if (e instanceof ReviewConflictError) ElMessage.error(e.message);
+    else throw e;
+  }
 }
 
 onMounted(async () => {
@@ -188,7 +219,7 @@ onMounted(async () => {
             <span v-else class="muted">全部完成</span>
           </div>
         </template>
-        <StepSequence :items="steps" @finish="finish" @rollback="rollback" />
+        <StepSequence :items="steps" :stale-ids="staleStepIds" @finish="finish" @rollback="rollback" @review="reviewStep" />
       </el-card>
     </div>
   </div>

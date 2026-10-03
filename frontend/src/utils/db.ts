@@ -3,10 +3,11 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import { buildBaseline } from '../types/review';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -46,6 +47,52 @@ class ClockRepairDB extends Dexie {
           .toCollection()
           .modify((row: any) => {
             if (row.positions === undefined) row.positions = [];
+          });
+      });
+    // v3：零件加乐观并发版本号；工序/走时测试补齐复核基准
+    this.version(3)
+      .stores({
+        clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+        parts: 'id, clockId, name, wearState, decision, sourceLot, version',
+        steps: 'id, clockId, seq, stepType, state, startedAt, reviewState',
+        tests: 'id, clockId, testedAt, conclusion, reviewState',
+      })
+      .upgrade(async (tx) => {
+        const now = Date.now();
+        // 零件补齐 version / updatedAt
+        await tx
+          .table('parts')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.version === undefined) row.version = 1;
+            if (row.updatedAt === undefined) row.updatedAt = now;
+          });
+        const allParts: MovementPart[] = await tx.table('parts').toArray();
+        // 工序补齐复核基准（按 partIds 关联零件）
+        await tx
+          .table('steps')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.reviewState === undefined) row.reviewState = 'reviewed';
+            if (!row.partBaseline) {
+              row.partBaseline = buildBaseline(row.partIds ?? [], allParts);
+            }
+            if (row.reviewedAt === undefined) row.reviewedAt = now;
+          });
+        // 走时测试补齐复核基准（覆盖该钟全部零件）
+        await tx
+          .table('tests')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.reviewState === undefined) row.reviewState = 'reviewed';
+            if (!row.partBaseline) {
+              const clockParts = allParts.filter((p) => p.clockId === row.clockId);
+              row.partBaseline = buildBaseline(
+                clockParts.map((p) => p.id),
+                clockParts,
+              );
+            }
+            if (row.reviewedAt === undefined) row.reviewedAt = now;
           });
       });
   }
@@ -134,6 +181,8 @@ export async function ensureSeedData(): Promise<void> {
       decision: '换新',
       sourceLot: 'MS-2024-07',
       dimension: 0.35,
+      version: 1,
+      updatedAt: now,
     },
     {
       id: newId('prt'),
@@ -145,6 +194,8 @@ export async function ensureSeedData(): Promise<void> {
       decision: '修配',
       sourceLot: 'JWL-18',
       dimension: 1.2,
+      version: 1,
+      updatedAt: now,
     },
     {
       id: newId('prt'),
@@ -156,6 +207,8 @@ export async function ensureSeedData(): Promise<void> {
       decision: '保留',
       sourceLot: '',
       dimension: 14.5,
+      version: 1,
+      updatedAt: now,
     },
   ];
 
@@ -176,6 +229,9 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 12 * day,
       finishedAt: now - 12 * day + 80 * 60000,
       state: 'done',
+      reviewState: 'reviewed',
+      partBaseline: buildBaseline([parts[0].id], [parts[0]]),
+      reviewedAt: now - 12 * day + 80 * 60000,
     },
     {
       id: newId('stp'),
@@ -193,6 +249,9 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 8 * day,
       finishedAt: now - 8 * day + 45 * 60000,
       state: 'done',
+      reviewState: 'reviewed',
+      partBaseline: buildBaseline([parts[1].id], [parts[1]]),
+      reviewedAt: now - 8 * day + 45 * 60000,
     },
     {
       id: newId('stp'),
@@ -209,6 +268,9 @@ export async function ensureSeedData(): Promise<void> {
       operator: '祁仲言',
       startedAt: now - 3 * day,
       state: 'pending',
+      reviewState: 'reviewed',
+      partBaseline: buildBaseline([parts[1].id], [parts[1]]),
+      reviewedAt: now - 3 * day,
     },
   ];
 
@@ -228,6 +290,12 @@ export async function ensureSeedData(): Promise<void> {
       ],
       powerReserve: 46,
       conclusion: '合格',
+      reviewState: 'reviewed',
+      partBaseline: buildBaseline(
+        parts.filter((p) => p.clockId === clockA).map((p) => p.id),
+        parts.filter((p) => p.clockId === clockA),
+      ),
+      reviewedAt: now - 2 * day,
     },
   ];
 

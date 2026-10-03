@@ -45,9 +45,12 @@ export interface MovementPart {
   sourceLot: string;
   /** 关键尺寸 mm */
   dimension: number;
+  /** 乐观并发版本号：每次自处理决定/关键尺寸/来源批号改动后自增 */
+  version: number;
+  updatedAt: number;
 }
 
-export type MovementPartDraft = Omit<MovementPart, 'id'>;
+export type MovementPartDraft = Omit<MovementPart, 'id' | 'version' | 'updatedAt'>;
 
 /** 是否待修配（磨损且未换新） */
 export function needsRepair(part: MovementPart): boolean {

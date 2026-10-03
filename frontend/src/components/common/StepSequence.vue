@@ -8,6 +8,8 @@ const props = defineProps<{
   items: RepairStep[];
   /** 是否展示上下移动/拖拽排序 */
   sortable?: boolean;
+  /** 已失效（待复核）的工序 id 集合 */
+  staleIds?: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -15,12 +17,17 @@ const emit = defineEmits<{
   (e: 'rollback', id: string): void;
   (e: 'move', payload: { id: string; direction: 'up' | 'down' }): void;
   (e: 'reorder', payload: { fromId: string; toId: string }): void;
+  (e: 'review', id: string): void;
 }>();
 
 const dragId = ref<string>('');
 
 const gaps = computed(() => findSeqGaps(props.items.map((it) => it.seq)));
 const conflict = computed(() => gaps.value.length > 0);
+
+function isStale(id: string): boolean {
+  return props.staleIds?.has(id) ?? false;
+}
 
 function onDragStart(id: string) {
   dragId.value = id;
@@ -55,6 +62,15 @@ function onDrop(toId: string) {
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
           <StateBadge :state="row.state" />
+          <el-tag
+            v-if="isStale(row.id)"
+            type="warning"
+            size="small"
+            effect="dark"
+            style="margin-top: 4px"
+            data-testid="stale-badge"
+            >待复核</el-tag
+          >
         </template>
       </el-table-column>
       <el-table-column label="清洗/润滑" min-width="200">
@@ -71,8 +87,18 @@ function onDrop(toId: string) {
       <el-table-column label="责任人" width="100">
         <template #default="{ row }">{{ row.operator }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="250">
+      <el-table-column label="操作" width="320">
         <template #default="{ row, $index }">
+          <el-button
+            v-if="isStale(row.id)"
+            size="small"
+            type="danger"
+            plain
+            data-testid="review-button"
+            @click="emit('review', row.id)"
+          >
+            复核
+          </el-button>
           <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
             完成
           </el-button>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
@@ -11,6 +11,7 @@ import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
 import { CONDITION_GRADES, type ConditionGrade } from '../types/clock';
 import { judgeTest } from '../types/test';
+import { isBaselineStale, snapshotVersions, ReviewConflictError } from '../types/review';
 
 const route = useRoute();
 const router = useRouter();
@@ -24,6 +25,23 @@ const { progress, steps, done, total, percent, current, gaps } = useRepairProgre
 const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
 const activeTab = ref('steps');
+
+/** 已失效（待复核）的工序 id 集合 */
+const staleStepIds = computed(() => {
+  const ids = new Set<string>();
+  for (const s of steps.value) {
+    if (isBaselineStale(s.partBaseline, parts.value)) ids.add(s.id);
+  }
+  return ids;
+});
+/** 已失效（待复核）的走时测试 id 集合 */
+const staleTestIds = computed(() => {
+  const ids = new Set<string>();
+  for (const t of tests.value) {
+    if (isBaselineStale(t.partBaseline, parts.value)) ids.add(t.id);
+  }
+  return ids;
+});
 
 async function finish(id: string) {
   await stepStore.finish(id);
@@ -49,6 +67,55 @@ async function changeGrade(value: unknown) {
   const grade = String(value) as ConditionGrade;
   await clockStore.setGrade(clockId.value, grade);
   ElMessage.success(`品相等级已更新为「${grade}」`);
+}
+
+async function reviewStep(id: string) {
+  const step = steps.value.find((s) => s.id === id);
+  if (!step) return;
+  // 复核前快照当前关联零件版本
+  const versions = snapshotVersions(parts.value, step.partIds);
+  try {
+    await ElMessageBox.confirm(
+      '复核将按当前零件状态重新基准化该工序。若复核期间零件再次变动，将提示冲突并保留待复核状态。',
+      '工序复核',
+      { confirmButtonText: '确认复核', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await stepStore.reviewStep(id, versions);
+    ElMessage.success('工序复核完成');
+  } catch (e) {
+    if (e instanceof ReviewConflictError) ElMessage.error(e.message);
+    else throw e;
+  }
+}
+
+async function reviewTest(id: string) {
+  const test = tests.value.find((t) => t.id === id);
+  if (!test) return;
+  // 复核前快照该钟全部零件版本
+  const versions = snapshotVersions(
+    parts.value,
+    parts.value.map((p) => p.id),
+  );
+  try {
+    await ElMessageBox.confirm(
+      '复核将按当前零件状态重新基准化该走时测试。若复核期间零件再次变动，将提示冲突并保留待复核状态。',
+      '走时测试复核',
+      { confirmButtonText: '确认复核', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await stepStore.reviewTest(id, versions);
+    ElMessage.success('走时测试复核完成');
+  } catch (e) {
+    if (e instanceof ReviewConflictError) ElMessage.error(e.message);
+    else throw e;
+  }
 }
 
 onMounted(async () => {
@@ -115,10 +182,12 @@ onMounted(async () => {
               <StepSequence
                 :items="steps"
                 sortable
+                :stale-ids="staleStepIds"
                 @finish="finish"
                 @rollback="rollback"
                 @move="move"
                 @reorder="reorder"
+                @review="reviewStep"
               />
             </el-tab-pane>
             <el-tab-pane :label="`零件清单（${parts.length}）`" name="parts">
@@ -136,7 +205,19 @@ onMounted(async () => {
               <div v-for="t in tests" :key="t.id" class="test-block">
                 <div class="card-head">
                   <strong>{{ new Date(t.testedAt).toLocaleString('zh-CN') }}</strong>
-                  <el-tag size="small" type="success">{{ t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}</el-tag>
+                  <el-tag size="small" :type="staleTestIds.has(t.id) ? 'warning' : 'success'" effect="dark">
+                    {{ staleTestIds.has(t.id) ? '待复核' : t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}
+                  </el-tag>
+                  <el-tag
+                    v-if="staleTestIds.has(t.id)"
+                    size="small"
+                    type="danger"
+                    plain
+                    data-testid="review-test-button"
+                    @click="reviewTest(t.id)"
+                  >
+                    复核
+                  </el-tag>
                   <span class="muted">日差 {{ t.rate }} s/d · 摆幅 {{ t.amplitude }}° · 偏振 {{ t.beatError }} ms</span>
                 </div>
                 <RateChart :readings="t.positions" />

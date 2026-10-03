@@ -1,22 +1,35 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
+import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
 import { TEST_POSITIONS, judgeTest, type PositionReading } from '../types/test';
 import { amplitudeLevel, avgAmplitude, avgBeatError, avgRate, beatErrorLevel, rateLabel, ratePerDayToMonth } from '../utils/timeCalc';
+import { isBaselineStale, snapshotVersions, ReviewConflictError } from '../types/review';
 
 const route = useRoute();
 const router = useRouter();
 const clockStore = useClockStore();
+const partStore = usePartStore();
 const stepStore = useStepStore();
 
 const clockId = ref(String(route.params.clockId ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
+const clockParts = computed(() => partStore.byClock(clockId.value));
+
+/** 已失效（待复核）的走时测试 id 集合 */
+const staleTestIds = computed(() => {
+  const ids = new Set<string>();
+  for (const t of tests.value) {
+    if (isBaselineStale(t.partBaseline, clockParts.value)) ids.add(t.id);
+  }
+  return ids;
+});
 
 const readings = reactive<PositionReading[]>(
   TEST_POSITIONS.map((position) => ({ position, rate: 0, amplitude: 260, beatError: 0.4 })),
@@ -71,6 +84,32 @@ async function save() {
   ElMessage.success('走时测试已记录');
 }
 
+async function reviewTest(id: string) {
+  const test = tests.value.find((t) => t.id === id);
+  if (!test) return;
+  // 复核前快照该钟全部零件版本
+  const versions = snapshotVersions(
+    clockParts.value,
+    clockParts.value.map((p) => p.id),
+  );
+  try {
+    await ElMessageBox.confirm(
+      '复核将按当前零件状态重新基准化该走时测试。若复核期间零件再次变动，将提示冲突并保留待复核状态。',
+      '走时测试复核',
+      { confirmButtonText: '确认复核', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await stepStore.reviewTest(id, versions);
+    ElMessage.success('走时测试复核完成');
+  } catch (e) {
+    if (e instanceof ReviewConflictError) ElMessage.error(e.message);
+    else throw e;
+  }
+}
+
 async function copySheet() {
   try {
     await navigator.clipboard.writeText(workSheet.value);
@@ -102,6 +141,7 @@ function reset() {
 
 onMounted(async () => {
   await clockStore.load();
+  await partStore.load();
   await stepStore.load();
   if (!clock.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
@@ -202,7 +242,29 @@ onMounted(async () => {
             <el-table-column prop="amplitude" label="摆幅" width="80" />
             <el-table-column prop="beatError" label="偏振" width="80" />
             <el-table-column prop="powerReserve" label="动储 h" width="90" />
-            <el-table-column prop="conclusion" label="结论" min-width="120" />
+            <el-table-column label="结论" min-width="120">
+              <template #default="{ row }">
+                <el-tag v-if="staleTestIds.has(row.id)" type="warning" size="small" effect="dark" data-testid="stale-badge"
+                  >待复核</el-tag
+                >
+                <span v-else>{{ row.conclusion }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="90">
+              <template #default="{ row }">
+                <el-button
+                  v-if="staleTestIds.has(row.id)"
+                  size="small"
+                  type="danger"
+                  plain
+                  data-testid="review-test-button"
+                  @click="reviewTest(row.id)"
+                >
+                  复核
+                </el-button>
+                <span v-else>—</span>
+              </template>
+            </el-table-column>
           </el-table>
           <el-empty v-if="tests.length === 0" description="暂无历史测试" :image-size="60" />
         </el-card>
